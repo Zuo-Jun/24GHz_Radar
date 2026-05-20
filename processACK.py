@@ -2,7 +2,6 @@ import struct
 import time
 from datetime import datetime
 
-# C sends RADAR_PROTO_SOF(0x55AA) via put_u16_le(), so the wire order is AA 55.
 SOF = b"\xAA\x55"
 PORT = "COM5"
 BAUDRATE = 115200
@@ -36,7 +35,8 @@ def build_ack(dev_id: int, seq: int) -> bytes:
 def main() -> None:
     import serial
 
-    ser = serial.Serial(PORT, BAUDRATE, timeout=READ_TIMEOUT_S, write_timeout=0.2)
+    # 关键修改：timeout 设为 0，完全非阻塞轮询
+    ser = serial.Serial(PORT, BAUDRATE, timeout=0, write_timeout=0.2)
     ser.reset_input_buffer()
     ser.reset_output_buffer()
 
@@ -45,10 +45,19 @@ def main() -> None:
     print(f"[{now_ms()}] Listening on {PORT} at {BAUDRATE} baud")
 
     while True:
-        # Avoid read(128) with a long timeout: a 20-byte MCU frame would wait
-        # for the timeout before ACK is sent.
-        chunk = ser.read(ser.in_waiting or 1)
+        # ── 关键修改：只读缓冲区里已有的全部数据，不阻塞 ──
+        chunk = ser.read(ser.in_waiting)
+
+        if chunk:
+            print(
+                f"[{now_ms()}] [DEBUG] ser.read() returned {len(chunk)} bytes, "
+                f"head=0x{chunk[0]:02X}",
+                flush=True,
+            )
+
         if not chunk:
+            # 没有数据时让出 CPU 1ms，避免空转占满一个核心
+            time.sleep(0.001)
             continue
 
         buffer += chunk
@@ -60,9 +69,13 @@ def main() -> None:
                 break
 
             if idx > 0:
+                print(
+                    f"[{now_ms()}] [DEBUG] Discarded {idx} bytes before SOF: "
+                    f"{buffer[:idx].hex(' ')}",
+                    flush=True,
+                )
                 del buffer[:idx]
 
-            # Min frame: SOF(2) + TYPE(1) + DEV_ID(2) + SEQ(2) + LEN(1) + CRC(2)
             if len(buffer) < 10:
                 break
 
@@ -83,34 +96,39 @@ def main() -> None:
             calc_crc = crc16_modbus(body)
 
             if recv_crc != calc_crc:
-                print(f"[{now_ms()}] CRC error:", frame.hex(" "))
+                print(f"[{now_ms()}] CRC error: {frame.hex(' ')}", flush=True)
                 continue
 
             if frame_type == 0x01:
                 payload = frame[8:-2]
-                rx_at = time.perf_counter()
 
                 if payload_len >= 10:
                     status, wl_mm, wv_mms = struct.unpack_from("<Hii", payload, 0)
                     print(
                         f"[{now_ms()}] RX DEV={dev_id}, SEQ={seq}, ST=0x{status:04X}, "
-                        f"WL={wl_mm / 1000:.3f} m, WV={wv_mms / 1000:.3f} m/s"
+                        f"WL={wl_mm / 1000:.3f} m, WV={wv_mms / 1000:.3f} m/s",
+                        flush=True,
                     )
                 else:
-                    print(f"[{now_ms()}] RX DEV={dev_id}, SEQ={seq}, short payload len={payload_len}")
+                    print(
+                        f"[{now_ms()}] RX DEV={dev_id}, SEQ={seq}, short payload len={payload_len}",
+                        flush=True,
+                    )
 
                 ack = build_ack(dev_id, seq)
                 if ACK_DELAY_S > 0:
                     time.sleep(ACK_DELAY_S)
                 ser.write(ack)
                 ser.flush()
-                ack_ms = (time.perf_counter() - rx_at) * 1000.0
-                print(f"[{now_ms()}] TX ACK +{ack_ms:.1f} ms:", ack.hex(" "))
+                print(f"[{now_ms()}] TX ACK: {ack.hex(' ')}", flush=True)
 
             elif frame_type == 0x81:
-                print(f"[{now_ms()}] RX ACK:", frame.hex(" "))
+                print(f"[{now_ms()}] RX ACK: {frame.hex(' ')}", flush=True)
             else:
-                print(f"[{now_ms()}] RX unknown type=0x{frame_type:02X}:", frame.hex(" "))
+                print(
+                    f"[{now_ms()}] RX unknown type=0x{frame_type:02X}: {frame.hex(' ')}",
+                    flush=True,
+                )
 
 
 if __name__ == "__main__":
