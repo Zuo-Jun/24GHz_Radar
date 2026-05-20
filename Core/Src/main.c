@@ -18,7 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "Radar_protocol.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -168,21 +167,21 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    RadarFrame_t frame = {
-        .water_level_valid = 1,
-        .water_level_m = 1.234f,
-        .water_velocity_valid = 1,
-        .water_velocity_mps = 0.567f,
-    };
+    // RadarFrame_t frame = {
+    //     .water_level_valid = 1,
+    //     .water_level_m = 1.234f,
+    //     .water_velocity_valid = 1,
+    //     .water_velocity_mps = 0.567f,
+    // };
 
-    /* 当前先手动补硬件状态位，后续可从硬件状态寄存器读取 */
-    uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
-                            RADAR_STATUS_ADC_OK;
+    // /* 当前先手动补硬件状态位，后续可从硬件状态寄存器读取 */
+    // uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
+    //                         RADAR_STATUS_ADC_OK;
 
     /* 只发二进制帧，不等ACK */
     // RadarProtocol_SendData(&frame, extra_status);
     /* 发二进制帧，等待ACK，失败重试 */
-    RadarProtocol_SendDataWaitAck(&frame, extra_status);
+    // RadarProtocol_SendDataWaitAck(&frame, extra_status);
 
     /* 如果想用串口助手看ASCII，可临时改成： */
     // RadarProtocol_SendDebug(&frame); 

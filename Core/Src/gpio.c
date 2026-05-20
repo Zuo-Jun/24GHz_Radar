@@ -50,14 +50,20 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SP3485E_EN_GPIO_Port, SP3485E_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, ADXL345_SCL_Pin|SP3485E_EN_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : SP3485E_EN_Pin */
-  GPIO_InitStruct.Pin = SP3485E_EN_Pin;
+  /*Configure GPIO pins : ADXL345_SCL_Pin SP3485E_EN_Pin */
+  GPIO_InitStruct.Pin = ADXL345_SCL_Pin|SP3485E_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(SP3485E_EN_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ADXL345_SDA_Pin */
+  GPIO_InitStruct.Pin = ADXL345_SDA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ADXL345_SDA_GPIO_Port, &GPIO_InitStruct);
 
 }
 

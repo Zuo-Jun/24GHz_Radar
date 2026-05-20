@@ -57,6 +57,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define ADXL345_SCL_Pin GPIO_PIN_0
+#define ADXL345_SCL_GPIO_Port GPIOC
+#define ADXL345_SDA_Pin GPIO_PIN_1
+#define ADXL345_SDA_GPIO_Port GPIOC
 #define SP3485E_EN_Pin GPIO_PIN_4
 #define SP3485E_EN_GPIO_Port GPIOC
 
