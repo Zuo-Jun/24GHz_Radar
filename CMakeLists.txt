@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/SP3485E.c
     Core/Src/Radar_protocol.c
+    Core/Src/ADXL345.c
 )
 
 # Add include paths

@@ -31,8 +31,8 @@
  *   GND           | GND      | 地
  *   CS            | +3.3V    | I2C模式（必须拉高）
  *   SDO           | GND/3.3V | I2C地址选择（GND:0x53, 3.3V:0x1D）
- *   SDA           | PB7(I2C1)| I2C数据线
- *   SCL           | PB6(I2C1)| I2C时钟线
+ *   SDA           | PC1(I2C1)| I2C数据线
+ *   SCL           | PC0(I2C1)| I2C时钟线
  *   INT1          | 可选     | 中断输出1
  *   INT2          | 可选     | 中断输出2
  *
@@ -391,4 +391,5 @@ void ADXL345_EnterSleep(void);
  */
 void ADXL345_SoftReset(void);
 
-#endif /* __ADXL345_H */
+#endif 
+
