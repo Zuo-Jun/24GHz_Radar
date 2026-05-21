@@ -21,6 +21,8 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
+#include "SP3485E.h"
+#include <stdio.h>
 
 /* USER CODE END 0 */
 
@@ -114,5 +116,18 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 }
 
 /* USER CODE BEGIN 1 */
+int __io_putchar(int ch)
+{
+  uint8_t data = (uint8_t)ch;
+
+  (void)RS485_Send(&data, 1U);
+  return ch;
+}
+
+int fputc(int ch, FILE *f)
+{
+  (void)f;
+  return __io_putchar(ch);
+}
 
 /* USER CODE END 1 */
