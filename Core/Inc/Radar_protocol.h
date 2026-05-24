@@ -24,8 +24,11 @@
  * bit0 / bit1:
  *   由RadarFrame_t中的water_level_valid、water_velocity_valid自动生成。
  *
- * bit3 / bit4 / bit8:
- *   PLL、ADC、自检等模块状态，当前通过extra_status传入。
+ * bit2:
+ *   ADXL345初始化成功后由协议层自动置位，表示姿态/倾角模块可用。
+ *
+ * bit3 / bit4:
+ *   PLL、ADC等模块状态，当前通过extra_status传入。
  *   后续如果要自动维护这些位，需要修改其他模块代码，按约定单独审核。
  */
 #define RADAR_STATUS_WATER_LEVEL_VALID    (1U << 0)

@@ -29,6 +29,8 @@
 static uint16_t s_dev_id = 1U; /* 设备ID，单设备时固定为1 */
 static uint16_t s_seq    = 0U; /* 待发送数据帧的SEQ，成功发送后递增 */
 
+extern volatile uint8_t g_adxl345_ok;
+
 /* ============================================================
  *  小端读写辅助函数
  *
@@ -87,6 +89,7 @@ static int32_t float_to_i32_1000(float value)
  *
  *  extra_status由调用者传入，用于补充其他模块状态：
  *    PLL_LOCK_OK、ADC_OK、SELF_TEST_OK等。
+ *  ADXL345初始化成功后，g_adxl345_ok会置位，并在这里合成ATTITUDE_VALID。
  *
  *  如果水位无效，当前先置SIGNAL_WEAK作为基础原因。
  *  后续如果算法层能区分弱信号、超量程、异常速度，再细分对应bit。
@@ -97,6 +100,10 @@ static uint16_t make_status(const RadarFrame_t *frame, uint16_t extra_status)
 
     if (frame == NULL) {
         return status;
+    }
+
+    if (g_adxl345_ok != 0U) {
+        status |= RADAR_STATUS_ATTITUDE_VALID;
     }
 
     if (frame->water_level_valid) {
