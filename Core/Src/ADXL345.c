@@ -2,13 +2,13 @@
  ******************************************************************************
  * @file    ADXL345.c
  * @brief   ADXL345 三轴数字加速度计驱动源文件
- *          使用I2C接口与STM32F405RGT6通信
+ *          使用软件I2C接口与STM32F405RGT6通信
  *
  * @实现说明
- *   - 使用HAL库的I2C函数进行通信
+ *   - 使用GPIO模拟I2C时序进行通信（SCL=PC0, SDA=PC1）
  *   - 支持7位从地址：0x53（SDO=GND）或 0x1D（SDO=VCC）
  *   - 支持多字节读写，地址自动递增
- *   - I2C时钟频率由CubeMX配置，推荐使用400kHz（快速模式）
+ *   - 不依赖硬件I2C外设，PC0/PC1按开漏输出配置并配合上拉电阻使用
  ******************************************************************************
  */
 
@@ -21,15 +21,155 @@
 static ADXL345_Range_t s_current_range = ADXL345_RANGE_2G;
 static bool s_full_resolution = false;
 
-/* I2C 8位写地址（7位地址左移1位）*/
-static uint8_t s_i2c_addr = (ADXL345_I2C_ADDR_LOW << 1);
-
-/* I2C句柄声明（需在main.c或CubeMX生成文件中定义并初始化）*/
-extern I2C_HandleTypeDef hi2c1;
+/* 当前I2C 7位地址 */
+static uint8_t s_i2c_addr = ADXL345_I2C_ADDR_LOW;
 
 /* ============================================================
- *  底层I2C通信函数
+ *  STM32的每个GPIO口都可以直接写BSRR寄存器来设置高低电平
+ *  0~15位对应置位，引脚输出高电平；16~31位对应复位，引脚输出低电平
  * ============================================================ */
+#define ADXL345_SCL_LOW()      (ADXL345_SCL_GPIO_Port->BSRR = (uint32_t)ADXL345_SCL_Pin << 16U)
+#define ADXL345_SCL_RELEASE()  (ADXL345_SCL_GPIO_Port->BSRR = (uint32_t)ADXL345_SCL_Pin)
+#define ADXL345_SDA_LOW()      (ADXL345_SDA_GPIO_Port->BSRR = (uint32_t)ADXL345_SDA_Pin << 16U)
+#define ADXL345_SDA_RELEASE()  (ADXL345_SDA_GPIO_Port->BSRR = (uint32_t)ADXL345_SDA_Pin)
+
+#define ADXL345_SDA_READ()     ((ADXL345_SDA_GPIO_Port->IDR & ADXL345_SDA_Pin) != 0U)
+#define ADXL345_SCL_READ()     ((ADXL345_SCL_GPIO_Port->IDR & ADXL345_SCL_Pin) != 0U)
+
+static void ADXL345_I2C_Delay(void)
+{
+    volatile uint32_t i = 700U;
+    while (i-- > 0U) {
+        __NOP();
+    }
+}
+
+static HAL_StatusTypeDef ADXL345_I2C_WaitSclHigh(void)
+{
+    uint32_t timeout = ADXL345_TIMEOUT_MS * 1000U;
+
+    while (!ADXL345_SCL_READ()) {
+        if (timeout-- == 0U) {
+            return HAL_TIMEOUT;
+        }
+        __NOP();
+    }
+
+    return HAL_OK;
+}
+
+static HAL_StatusTypeDef ADXL345_I2C_Start(void)
+{
+    ADXL345_SDA_RELEASE();
+    ADXL345_SCL_RELEASE();
+    if (ADXL345_I2C_WaitSclHigh() != HAL_OK) {
+        return HAL_TIMEOUT;
+    }
+    ADXL345_I2C_Delay();
+    ADXL345_SDA_LOW();
+    ADXL345_I2C_Delay();
+    ADXL345_SCL_LOW();
+    ADXL345_I2C_Delay();
+
+    return HAL_OK;
+}
+
+static void ADXL345_I2C_Stop(void)
+{
+    ADXL345_SDA_LOW();
+    ADXL345_I2C_Delay();
+    ADXL345_SCL_RELEASE();
+    (void)ADXL345_I2C_WaitSclHigh();
+    ADXL345_I2C_Delay();
+    ADXL345_SDA_RELEASE();
+    ADXL345_I2C_Delay();
+}
+
+static HAL_StatusTypeDef ADXL345_I2C_WriteRawByte(uint8_t data)
+{
+    uint8_t i;
+
+    for (i = 0U; i < 8U; i++) {
+        /* MSB，主机准备当前数据位*/
+        if ((data & 0x80U) != 0U) {
+            ADXL345_SDA_RELEASE();
+        } else {
+            ADXL345_SDA_LOW();
+        }
+        data <<= 1U;
+
+        ADXL345_I2C_Delay(); /* 对应数据建立时间，保证SDA在SCL有效采样前稳定*/
+        /* 产生SCL高电平，并确认SCL确实升高*/
+        ADXL345_SCL_RELEASE();
+        if (ADXL345_I2C_WaitSclHigh() != HAL_OK) {
+            return HAL_TIMEOUT;
+        }
+        ADXL345_I2C_Delay(); /* 保持SCL高电平，让ADXL345采样SDA*/
+        ADXL345_SCL_LOW();   /* 结束当前bit传输*/
+        ADXL345_I2C_Delay(); /* 保持SCL低电平，为下一位准备*/
+    }
+    /* 读取从机发送的ACK*/
+    ADXL345_SDA_RELEASE(); /* 主机释放SDA，恢复默认高电平*/
+    ADXL345_I2C_Delay(); /* ACK位建立时间*/
+    ADXL345_SCL_RELEASE(); /* 主机释放SCL，产生第9个时钟*/
+    if (ADXL345_I2C_WaitSclHigh() != HAL_OK) {
+        return HAL_TIMEOUT;
+    }   
+    ADXL345_I2C_Delay(); /* 在SCL高电平期间读取SDA */
+    /* 如果SDA为高电平，说明从机没有ACK */
+    if (ADXL345_SDA_READ()) {
+        ADXL345_SCL_LOW();
+        ADXL345_I2C_Delay();
+        return HAL_ERROR;
+    }
+
+    ADXL345_SCL_LOW(); /*主机拉低SCL，结束ACK周期*/
+    ADXL345_I2C_Delay();
+
+    return HAL_OK;
+}
+
+static HAL_StatusTypeDef ADXL345_I2C_ReadRawByte(uint8_t *data, bool ack)
+{
+    uint8_t i;
+    uint8_t value = 0U;
+
+    ADXL345_SDA_RELEASE(); /* 从机ADXL345输出数据*/
+
+    for (i = 0U; i < 8U; i++) {
+        value <<= 1U;
+        ADXL345_SCL_RELEASE(); /* 主机释放SCL，产生时钟*/
+        if (ADXL345_I2C_WaitSclHigh() != HAL_OK) {
+            return HAL_TIMEOUT;
+        }
+        ADXL345_I2C_Delay();
+        if (ADXL345_SDA_READ()) { /* 从机ADXL345在SCL高电平期间拉低释放数据线*/
+            value |= 0x01U;
+        }
+        ADXL345_SCL_LOW(); /* 主机拉低SCL，结束这一位*/
+        ADXL345_I2C_Delay(); /*保持SCL低电平 */
+    }
+
+    if (ack) { /* 主机准备发送ACK/NACK*/
+        ADXL345_SDA_LOW(); /* 发送ACK*/
+    } else {
+        ADXL345_SDA_RELEASE(); /* 发送NACK*/
+    }
+
+    ADXL345_I2C_Delay();
+    ADXL345_SCL_RELEASE(); /*读取主机的ACK/NACK*/
+    if (ADXL345_I2C_WaitSclHigh() != HAL_OK) {
+        return HAL_TIMEOUT;
+    }
+    ADXL345_I2C_Delay();
+    ADXL345_SCL_LOW();
+    ADXL345_SDA_RELEASE();
+    ADXL345_I2C_Delay();
+
+    *data = value;
+
+    return HAL_OK;
+}
 
 /**
  * @brief  I2C写一个字节
@@ -39,8 +179,21 @@ extern I2C_HandleTypeDef hi2c1;
  */
 static HAL_StatusTypeDef ADXL345_I2C_WriteByte(uint8_t addr, uint8_t data)
 {
-    return HAL_I2C_Mem_Write(&hi2c1, s_i2c_addr, addr,
-                             I2C_MEMADD_SIZE_8BIT, &data, 1, ADXL345_TIMEOUT_MS);
+    HAL_StatusTypeDef status;
+
+    status = ADXL345_I2C_Start();
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte((uint8_t)(s_i2c_addr << 1U));
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte(addr);
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte(data);
+    }
+
+    ADXL345_I2C_Stop();
+    return status;
 }
 
 /**
@@ -51,8 +204,16 @@ static HAL_StatusTypeDef ADXL345_I2C_WriteByte(uint8_t addr, uint8_t data)
 static uint8_t ADXL345_I2C_ReadByte(uint8_t addr)
 {
     uint8_t data = 0U;
-    HAL_I2C_Mem_Read(&hi2c1, s_i2c_addr, addr,
-                     I2C_MEMADD_SIZE_8BIT, &data, 1, ADXL345_TIMEOUT_MS);
+
+    if (ADXL345_I2C_Start() == HAL_OK &&
+        ADXL345_I2C_WriteRawByte((uint8_t)(s_i2c_addr << 1U)) == HAL_OK &&  /** 写入设备地址+写标志 */
+        ADXL345_I2C_WriteRawByte(addr) == HAL_OK &&
+        ADXL345_I2C_Start() == HAL_OK &&
+        ADXL345_I2C_WriteRawByte((uint8_t)((s_i2c_addr << 1U) | 0x01U)) == HAL_OK) { /* 写入设备地址+读标志 */
+        (void)ADXL345_I2C_ReadRawByte(&data, false);
+    }
+
+    ADXL345_I2C_Stop();
     return data;
 }
 
@@ -66,8 +227,33 @@ static uint8_t ADXL345_I2C_ReadByte(uint8_t addr)
  */
 static HAL_StatusTypeDef ADXL345_I2C_ReadMulti(uint8_t addr, uint8_t *buf, uint8_t len)
 {
-    return HAL_I2C_Mem_Read(&hi2c1, s_i2c_addr, addr,
-                            I2C_MEMADD_SIZE_8BIT, buf, len, ADXL345_TIMEOUT_MS);
+    HAL_StatusTypeDef status;
+    uint8_t i;
+
+    if ((buf == NULL) || (len == 0U)) {
+        return HAL_ERROR;
+    }
+
+    status = ADXL345_I2C_Start();
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte((uint8_t)(s_i2c_addr << 1U));
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte(addr);
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_Start();
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte((uint8_t)((s_i2c_addr << 1U) | 0x01U));
+    }
+
+    for (i = 0U; (status == HAL_OK) && (i < len); i++) {
+        status = ADXL345_I2C_ReadRawByte(&buf[i], (i + 1U) < len);
+    }
+
+    ADXL345_I2C_Stop();
+    return status;
 }
 
 /**
@@ -78,8 +264,25 @@ static HAL_StatusTypeDef ADXL345_I2C_ReadMulti(uint8_t addr, uint8_t *buf, uint8
  */
 static void ADXL345_I2C_WriteMulti(uint8_t addr, const uint8_t *buf, uint8_t len)
 {
-    HAL_I2C_Mem_Write(&hi2c1, s_i2c_addr, addr,
-                      I2C_MEMADD_SIZE_8BIT, (uint8_t *)buf, len, ADXL345_TIMEOUT_MS);
+    HAL_StatusTypeDef status;
+    uint8_t i;
+
+    if ((buf == NULL) || (len == 0U)) {
+        return;
+    }
+
+    status = ADXL345_I2C_Start();
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte((uint8_t)(s_i2c_addr << 1U));
+    }
+    if (status == HAL_OK) {
+        status = ADXL345_I2C_WriteRawByte(addr);
+    }
+    for (i = 0U; (status == HAL_OK) && (i < len); i++) {
+        status = ADXL345_I2C_WriteRawByte(buf[i]);
+    }
+
+    ADXL345_I2C_Stop();
 }
 
 /* ============================================================
@@ -97,11 +300,14 @@ bool ADXL345_Init(const ADXL345_Config_t *cfg)
     uint8_t data_format;
     uint8_t bw_rate;
     uint8_t power_ctl;
-    uint8_t fifo_ctl;
     uint8_t offset_data[3];
 
-    /* 根据配置设置I2C地址 */
-    s_i2c_addr = (cfg->addr_high ? ADXL345_I2C_ADDR_HIGH : ADXL345_I2C_ADDR_LOW) << 1;
+    if (cfg == NULL) {
+        return false;
+    }
+
+    /* 根据配置设置I2C 7位地址 */
+    s_i2c_addr = cfg->addr_high ? ADXL345_I2C_ADDR_HIGH : ADXL345_I2C_ADDR_LOW;
 
     /* 读取设备ID，验证通信是否正常 */
     id = ADXL345_I2C_ReadByte(ADXL345_REG_DEVID);
@@ -109,19 +315,6 @@ bool ADXL345_Init(const ADXL345_Config_t *cfg)
         return false;  /* 通信失败或芯片不在线 */
     }
 
-    /* 软件复位，确保寄存器处于已知状态 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_POWER_CTL, 0xD7U);  /* 写入0xD7触发软件复位 */
-    HAL_Delay(2);  /* 等待复位完成（手册要求>1ms）*/
-
-    /* 配置数据格式寄存器
-     * D7: SELF_TEST  = 0（自测关闭）
-     * D6: SPI        = 0（I2C模式忽略此位）
-     * D5: INT_INVERT = 0（中断高有效）
-     * D4: 0（保留）
-     * D3: FULL_RES   = cfg->full_res
-     * D2: JUSTIFY    = 0（右对齐，有符号数）
-     * D1:D0 RANGE    = cfg->range
-     */
     data_format = (uint8_t)(cfg->range & 0x03U);
     if (cfg->full_res) {
         data_format |= 0x08U;  /* FULL_RES = 1 */
@@ -132,10 +325,6 @@ bool ADXL345_Init(const ADXL345_Config_t *cfg)
     s_current_range = cfg->range;
     s_full_resolution = cfg->full_res;
 
-    /* 配置带宽和数据速率寄存器
-     * D4: LOW_POWER  = cfg->low_power
-     * D3:D0 RATE     = cfg->data_rate
-     */
     bw_rate = (uint8_t)(cfg->data_rate & 0x0FU);
     if (cfg->low_power) {
         bw_rate |= 0x10U;  /* LOW_POWER = 1 */
@@ -148,21 +337,9 @@ bool ADXL345_Init(const ADXL345_Config_t *cfg)
     offset_data[2] = (uint8_t)cfg->offset_z;
     ADXL345_I2C_WriteMulti(ADXL345_REG_OFSX, offset_data, 3);
 
-    /* 配置FIFO
-     * D7:D6 FIFO_MODE = cfg->fifo_mode
-     * D5 TRIGGER      = 0（触发引脚INT1）
-     * D4:D0 SAMPLES   = cfg->fifo_samples
-     */
-    fifo_ctl = (uint8_t)((cfg->fifo_mode & 0x03U) << 6) | (cfg->fifo_samples & 0x1FU);
-    ADXL345_I2C_WriteByte(ADXL345_REG_FIFO_CTL, fifo_ctl);
-
-    /* 配置电源控制寄存器，进入测量模式
-     * D7: AUTO_SLEEP = 0（禁用自动休眠）
-     * D6: LINK       = 0（禁用活动/静止联动）
-     * D5: MEASURE    = 1（测量模式）
-     * D4: SLEEP      = 0（正常模式，不休眠）
-     * D3:D0 WAKEUP   = 0000（唤醒频率8Hz，休眠模式下有效）
-     */
+    /* At power-up, the device is in standby mode, awaiting a command to enter measurement mode
+     * This command can be initiated by setting the measure bit(Bit D3) in the POWER_CTL register(0x2D)
+     * It is recommended to configure the device in standby mode and then to enable measurement mode.*/
     power_ctl = 0x08U;  /* MEASURE = 1 */
     ADXL345_I2C_WriteByte(ADXL345_REG_POWER_CTL, power_ctl);
 
@@ -232,7 +409,7 @@ int16_t ADXL345_ReadZ(void)
 /**
  * @brief  将原始加速度值转换为g值
  * @note   全分辨率模式：固定4mg/LSB
- *         10位模式：根据量程不同，分辨率不同
+ *         10位模式：根据量程不同，精度不同
  *           ±2g  → 4mg/LSB    (256 LSB/g)
  *           ±4g  → 7.8mg/LSB  (128 LSB/g)
  *           ±8g  → 15.6mg/LSB (64 LSB/g)
@@ -243,10 +420,8 @@ float ADXL345_RawToG(int16_t raw, ADXL345_Range_t range, bool full_res)
     float scale;
 
     if (full_res) {
-        /* 全分辨率模式：固定4mg/LSB */
         scale = 0.004f;  /* 4mg = 0.004g */
     } else {
-        /* 10位模式：根据量程确定分辨率 */
         switch (range) {
             case ADXL345_RANGE_2G:
                 scale = 0.004f;    /* 4mg/LSB */
@@ -312,166 +487,6 @@ void ADXL345_SetOffset(int8_t x, int8_t y, int8_t z)
     offset_data[1] = (uint8_t)y;
     offset_data[2] = (uint8_t)z;
     ADXL345_I2C_WriteMulti(ADXL345_REG_OFSX, offset_data, 3);
-}
-
-/**
- * @brief  配置FIFO
- */
-void ADXL345_ConfigFifo(ADXL345_FifoMode_t mode, uint8_t samples)
-{
-    uint8_t fifo_ctl = (uint8_t)((mode & 0x03U) << 6) | (samples & 0x1FU);
-    ADXL345_I2C_WriteByte(ADXL345_REG_FIFO_CTL, fifo_ctl);
-}
-
-/**
- * @brief  读取FIFO状态
- */
-uint8_t ADXL345_GetFifoStatus(void)
-{
-    return ADXL345_I2C_ReadByte(ADXL345_REG_FIFO_STATUS) & 0x3FU;
-}
-
-/**
- * @brief  配置活动检测
- * @param  threshold 活动阈值（比例因子：62.5mg/LSB，推荐值4~10）
- * @param  ac_dc 0=直流耦合（比较当前值与阈值）
- *               1=交流耦合（比较当前值与参考值的偏差）
- * @param  axes_en 使能检测的轴（bit0=X, bit1=Y, bit2=Z）
- */
-void ADXL345_ConfigActivity(uint8_t threshold, bool ac_dc, uint8_t axes_en)
-{
-    /* 设置活动阈值 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_THRESH_ACT, threshold & 0x7FU);
-
-    /* 配置活动检测控制
-     * D7: ACT_ACDC   = ac_dc
-     * D6: ACT_X_EN   = axes_en bit0
-     * D5: ACT_Y_EN   = axes_en bit1
-     * D4: ACT_Z_EN   = axes_en bit2
-     */
-    uint8_t act_ctl = (ac_dc ? 0x80U : 0x00U) | ((axes_en & 0x07U) << 4);
-    ADXL345_I2C_WriteByte(ADXL345_REG_ACT_INACT_CTL, act_ctl);
-}
-
-/**
- * @brief  配置静止检测
- */
-void ADXL345_ConfigInactivity(uint8_t threshold, uint8_t time, bool ac_dc, uint8_t axes_en)
-{
-    /* 设置静止阈值 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_THRESH_INACT, threshold & 0x7FU);
-
-    /* 设置静止时间 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_TIME_INACT, time);
-
-    /* 配置静止检测控制（低4位）*/
-    uint8_t ctl = ADXL345_I2C_ReadByte(ADXL345_REG_ACT_INACT_CTL);
-    ctl &= 0xF0U;  /* 清除低4位 */
-    ctl |= (ac_dc ? 0x08U : 0x00U) | (axes_en & 0x07U);
-    ADXL345_I2C_WriteByte(ADXL345_REG_ACT_INACT_CTL, ctl);
-}
-
-/**
- * @brief  配置自由落体检测
- * @param  threshold 阈值（推荐5-9，对应300mg~600mg）
- * @param  time 时间（推荐20~50，对应100ms~250ms）
- */
-void ADXL345_ConfigFreeFall(uint8_t threshold, uint8_t time)
-{
-    ADXL345_I2C_WriteByte(ADXL345_REG_THRESH_FF, threshold & 0x7FU);
-    ADXL345_I2C_WriteByte(ADXL345_REG_TIME_FF, time & 0xFFU);
-}
-
-/**
- * @brief  配置单击检测
- */
-void ADXL345_ConfigSingleTap(uint8_t threshold, uint8_t duration, uint8_t axes_en)
-{
-    /* 敲击阈值 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_THRESH_TAP, threshold);
-
-    /* 敲击持续时间（最大值127）*/
-    ADXL345_I2C_WriteByte(ADXL345_REG_DUR, duration & 0x7FU);
-
-    /* 配置敲击轴使能
-     * D7: TAP_SUPPRESS = 0（不抑制双重敲击检测）
-     * D6: TAP_X_EN     = axes_en bit0
-     * D5: TAP_Y_EN     = axes_en bit1
-     * D4: TAP_Z_EN     = axes_en bit2
-     */
-    uint8_t tap_axes = (axes_en & 0x07U) << 4;
-    ADXL345_I2C_WriteByte(ADXL345_REG_TAP_AXES, tap_axes);
-}
-
-/**
- * @brief  配置双击检测
- */
-void ADXL345_ConfigDoubleTap(uint8_t threshold, uint8_t duration,
-                               uint8_t latent, uint8_t window, uint8_t axes_en)
-{
-    /* 单击参数设置 */
-    ADXL345_ConfigSingleTap(threshold, duration, axes_en);
-
-    /* 潜伏时间（第一次敲击结束到第二次敲击开始的最小间隔）*/
-    ADXL345_I2C_WriteByte(ADXL345_REG_LATENT, latent);
-
-    /* 窗口时间（从第一次敲击开始到第二次敲击结束的最大间隔）*/
-    ADXL345_I2C_WriteByte(ADXL345_REG_WINDOW, window);
-
-    /* 使能双击检测（设置TAP_SUPPRESS=0）*/
-    uint8_t tap_axes = ADXL345_I2C_ReadByte(ADXL345_REG_TAP_AXES);
-    tap_axes &= ~0x80U;  /* 清除抑制位 */
-    ADXL345_I2C_WriteByte(ADXL345_REG_TAP_AXES, tap_axes);
-}
-
-/**
- * @brief  使能中断
- * @param  int_type 中断类型（可或多个中断类型）
- * @param  map_int1 true: 映射到INT1, false: 映射到INT2
- */
-void ADXL345_EnableInterrupt(ADXL345_IntType_t int_type, bool map_int1)
-{
-    /* 使能中断 */
-    uint8_t int_enable = ADXL345_I2C_ReadByte(ADXL345_REG_INT_ENABLE);
-    int_enable |= (uint8_t)int_type;
-    ADXL345_I2C_WriteByte(ADXL345_REG_INT_ENABLE, int_enable);
-
-    /* 映射中断到INT1或INT2
-     * 每个中断位：0=映射到INT1，1=映射到INT2
-     */
-    uint8_t int_map = ADXL345_I2C_ReadByte(ADXL345_REG_INT_MAP);
-    if (map_int1) {
-        int_map &= ~(uint8_t)int_type;  /* 清除位，映射到INT1 */
-    } else {
-        int_map |= (uint8_t)int_type;   /* 置位，映射到INT2 */
-    }
-    ADXL345_I2C_WriteByte(ADXL345_REG_INT_MAP, int_map);
-}
-
-/**
- * @brief  禁用中断
- */
-void ADXL345_DisableInterrupt(ADXL345_IntType_t int_type)
-{
-    uint8_t int_enable = ADXL345_I2C_ReadByte(ADXL345_REG_INT_ENABLE);
-    int_enable &= ~(uint8_t)int_type;
-    ADXL345_I2C_WriteByte(ADXL345_REG_INT_ENABLE, int_enable);
-}
-
-/**
- * @brief  读取中断源
- */
-uint8_t ADXL345_GetInterruptSource(void)
-{
-    return ADXL345_I2C_ReadByte(ADXL345_REG_INT_SOURCE);
-}
-
-/**
- * @brief  清除中断（读取INT_SOURCE寄存器自动清除）
- */
-void ADXL345_ClearInterrupt(void)
-{
-    ADXL345_I2C_ReadByte(ADXL345_REG_INT_SOURCE);
 }
 
 /**
