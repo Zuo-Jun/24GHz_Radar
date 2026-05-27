@@ -41,29 +41,27 @@
  *  Tc不是随意定的，它同时约束了三件事，需要三者之间取平衡
  *  1、距离分辨率只取决于带宽B，Dres=c/2B,Tc改变不影响距离测量精度
  *  2、Tc决定了速度测量能力。对于不同距离物体，Vmax=λ/4Tc
- *  已知波长λ约为12.44mm，Tc越短，Vmax越大。但Tc为1ms时，Vmax为3.11m/s≈11.2km/h
- *  测河道水速小于3m/s情况下，Tc=1ms够用，但要测量行驶车辆速度不够，需要降额
+ *  已知波长λ约为12.44mm，Tc越短，Vmax越大。当Tc为3.16ms时，Vmax为约0.98m/s，能满足测河道水速的需求
  *  3、Tc决定了单次chirp内每步间隔CHIRP_STEP_US，进而决定了SPI速度要求
  *  每步间隔越短，SPI需要在更短的时间内完成24位传输，这是硬件的硬性限制，所以Tc不能无限缩短。
  * 
  *  CHIRP_STEPS：带宽/步进 = 250MHz/3.2MHz = 78.125，取79步
  *  79步实际覆盖 79×3.2MHz = 252.8MHz（比250MHz多1%，可接受）
  *
- *  CHIRP_STEP_US：每步间隔=13μs（定时器TIM2周期）
- *  时间分配：SPI写R1+R0约5μs → PLL锁定约5μs → ADC采样约3μs
- *  实际Tc = 79×13μs = 1.027ms（误差2.7%，可接受)
+ *  CHIRP_STEP_US：每步间隔=40μs（定时器TIM2周期）
+ *  时间分配：SPI写R1+R0约5μs → PLL锁定约5μs → ADC采样约4.7*4μs
+ *  实际Tc = 79×40μs = 3.16ms（误差2.7%，可接受)
  * ============================================================ */
-#define RADAR_TC_S          0.001           /* 单次chirp时间 Tc = 1ms */
+#define RADAR_TC_S          ((CHIRP_STEP_US * CHIRP_STEPS) / 1e6)  /* 每次chirp的持续时间，单位秒 */
 #define RADAR_PLL_SETTLE_S  0.001           /* Chirp_Start() HAL_Delay(1), PLL settle time */
 #define RADAR_WATER_PHASE_DT_S (2.0 * (RADAR_TC_S + RADAR_PLL_SETTLE_S)) /* UP phase-to-phase interval in UP/DOWN water-speed mode */
 
-#define CHIRP_STEPS         ((int)(RADAR_BW_HZ/RADAR_F_STEP_VCO_HZ+0.5))  /* 每次chirp的频率步数 */
-#define CHIRP_STEP_US       RADAR_TC_S*1e6/CHIRP_STEPS   /* 每步间隔 = Tc/steps ≈ 12.7μs，取13μs */
-
+#define CHIRP_STEPS         79  
+#define CHIRP_STEP_US       40
 
 // 帧结构参数
 #define N_CHIRPS_WATER_V    16  /* 水速测量：16对三角波（上+下各16次，共32ms） */
-#define N_CHIRPS_CAR        4   /* 车速测量：4对三角波取平均，够用且快 */
+// #define N_CHIRPS_CAR        4   /* 车速测量：4对三角波取平均，够用且快 */
 
 
 /* ============================================================
@@ -78,15 +76,8 @@
  *  SNR = 信号功率/噪声功率，通常用dB表示，dB值越大越好
  *  过采样改善SNR的原理是：ADC的量化噪声均匀分布在0到fs/2的频带内，有用信号只占其中很窄的一段
  *  （比如0到16.7kHz）。采样率越高，噪声被稀释到更宽的频带，落在有用信号带宽内的噪声就越少。
- *
- *  选200ksps的理由：
- *    1、过采样因子OSR = 实际采样率/奈奎斯特最低采样率 = 200ksps/33.4ksps ≈ 6
- *    SNR（信噪比）改善 = 10×log10(OSR) = 10×log10(6) ≈ 7.8dB
- *    2、STM32F4 ADC最高2.4Msps，200ksps轻松实现
- *    每步13μs内完成一次转换（200ksps→每次5μs<13μs）
  * ============================================================ */
-#define ADC_FS_HZ           200000          /* ADC采样率 200ksps */
-#define ADC_SAMPLES_PER_CHIRP CHIRP_STEPS   /* 每步采1点，共79点 */
+#define ADC_FS_HZ             1e6/CHIRP_STEP_US   /* 实际进入FFT的采样率 */
 
 
 // 物理量计算
@@ -94,8 +85,6 @@
 #define RADAR_S             (RADAR_BW_HZ / RADAR_TC_S)      /* 调频斜率 250GHz/s */
 
 #define RADAR_DRANGE        (SPEED_OF_LIGHT / (2.0 * RADAR_BW_HZ)) /* 距离分辨率=0.60m */
-/* 数值上等于RADAR_DRANGE，意义是FFT第k个bin对应距离k×RANGE_PER_BIN */
-#define RANGE_PER_BIN       RADAR_DRANGE
 /* 水速相位差分最大不模糊速度=λ/(4Δt) */
 #define V_MAX_SINGLE_PAIR   (RADAR_WAVELENGTH / (4.0 * RADAR_WATER_PHASE_DT_S))
 

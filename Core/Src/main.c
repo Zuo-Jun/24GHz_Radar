@@ -18,15 +18,21 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
+#include "dma.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ADXL345.h"
 #include "SP3485E.h"
 #include "Radar_frame.h"
 #include "Radar_protocol.h"
+#include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,7 +44,7 @@
 /* USER CODE BEGIN PD */
 // #define PERIPH_POWER_ON()   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET)
 // #define PERIPH_POWER_OFF()  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET)
-
+#define RAD_TO_DEG              (57.2957795f)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,6 +55,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+volatile uint8_t g_adxl345_ok = 0U;
 
 /* USER CODE END PV */
 
@@ -92,7 +99,11 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_UART4_Init();
+  MX_TIM2_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
   RS485_Init();
   //  RS485_SendStr("$RADAR,BOOT:OK\r\n");
@@ -161,22 +172,52 @@ int main(void)
      * ====================================================== */
     // RadarFrame_t frame;
 
+    ADXL345_Config_t cfg = {
+    .data_rate    = ADXL345_RATE_100,   /* 100Hz */
+    .range        = ADXL345_RANGE_2G,   /* ±2g */
+    .full_res     = true,               /* 全分辨率模式 */
+    .low_power    = false,
+    .offset_x=0, .offset_y=-2, .offset_z=4, /* 手动偏移校准 */
+    .addr_high    = false,              /* 地址0x53 */
+  };
+
+  if(ADXL345_Init(&cfg)) {
+    g_adxl345_ok = 1U;
+    // RS485_SendStr("ACCEL_INIT_SUCCESS\r\n");
+    printf("ADXL345 initialized, ID=0x%02X\r\n", ADXL345_GetDeviceID());
+  } 
+
+  ADXL345_AccelData_t accel;
+  (void)accel;
+
   while (1)
   {
     // Radar_MeasureFrame(&frame);
+
+    // if(ADXL345_ReadAccel(&accel))
+    // {
+    //   float x_g = ADXL345_RawToG(accel.x, cfg.range, cfg.full_res);
+    //   float y_g = ADXL345_RawToG(accel.y, cfg.range, cfg.full_res);
+    //   float z_g = ADXL345_RawToG(accel.z, cfg.range, cfg.full_res);
+    //   float x_angle_deg = atan2f(x_g, sqrtf(y_g * y_g + z_g * z_g)) * RAD_TO_DEG;
+    //   float y_angle_deg = atan2f(y_g, sqrtf(x_g * x_g + z_g * z_g)) * RAD_TO_DEG;
+    //   printf("X_raw=%d, Y_raw=%d, Z_raw=%d,X=%.3lf,Y=%.3lf,Z=%.3lf,X_ANGLE=%.2fdeg, Y_ANGLE=%.2fdeg\r\n",
+    //          accel.x, accel.y, accel.z, x_g, y_g, z_g, x_angle_deg, y_angle_deg);
+    // }
+    
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // RadarFrame_t frame = {
-    //     .water_level_valid = 1,
-    //     .water_level_m = 1.234f,
-    //     .water_velocity_valid = 1,
-    //     .water_velocity_mps = 0.567f,
-    // };
+    RadarFrame_t frame = {
+        .water_level_valid = 1,
+        .water_level_m = 1.234f,
+        .water_velocity_valid = 1,
+        .water_velocity_mps = 0.567f,
+    };
 
     // /* 当前先手动补硬件状态位，后续可从硬件状态寄存器读取 */
-    // uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
-    //                         RADAR_STATUS_ADC_OK;
+    uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
+                            RADAR_STATUS_ADC_OK;
 
     /* 只发二进制帧，不等ACK */
     // RadarProtocol_SendData(&frame, extra_status);

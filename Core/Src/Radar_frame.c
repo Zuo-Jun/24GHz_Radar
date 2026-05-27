@@ -33,46 +33,86 @@
  * SO-CFAR   取左右两侧均值中的较小值	宁可虚警也不漏检		杂波边缘(防漏检)
  * OS- CFAR  参考单元排序，取第k大		对少量强干扰样本不敏感	多目标密集场景
 */
-#define CFAR_GUARD      2       // 保护单元数(每侧)
-#define CFAR_REF        8       // 参考单元数(每侧)
+#define CFAR_GUARD      1       // 每侧保护单元数,用于隔离目标主瓣,避免目标能量进入噪声估计
+#define CFAR_REF        6       // 每侧参考单元数
 #define CFAR_THRESHOLD  13.0f   // 门限系数(10×log10(13)≈11dB)
-#define CFAR_EPSILON	1e-30f  // 除零保护 
+#define CFAR_EPSILON	1e-30f  // 除零保护
+#define CFAR_MIN_BIN        2   // 跳过DC和极低频杂散,避免bin 0/1的直流泄漏影响检测
+#define CFAR_MIN_REF_TOTAL  4   // 至少需要的参考单元总数,用于保证噪声估计至少有一定样本数,避免边缘处参考单元过少导致门限不稳定
 
 /**
- * @param[in]  mag       : 输入幅度谱数组指针
- * @param[in]  len       : 输入谱长度（有效检测范围为[GUARD+REF,len-GUARD-REF]）
- * @param[out] peak_val  : 输出检测到的峰值幅度（可选，传NULL则不输出）
- * 
- * @return int  : 检测到的峰值bin索引，-1表示未检测到目标
- * 
- * @note  输入要求：
- *        - 数组长度len必须 >= 2*(CFAR_GUARD+CFAR_REF)+1
- *		  - 选择信噪比最大的过门限点作为目标
+ * @param[in] mag : 输入幅度谱数组，长度为len，通常为FFT_SIZE/2
+ * @param[in] len : 输入幅度谱长度
+ *
+ * @return int : 检测到的最佳目标bin索引，-1表示未检测到目标
+ *
+ * @note 边缘自适应CA-CFAR：
+ *       - 常规CA-CFAR要求CUT左右两侧都有完整参考窗，因此近距离bin会被跳过。
+ *       - 本函数允许边缘bin参与检测：当左侧参考窗不足时，只使用可用的左侧参考单元
+ *         和右侧参考单元估计噪声；右边缘同理。
+ *       - 若多个bin超过门限，返回信噪比最高的bin，而不是第一个超过门限的bin。
  */
 static int cfar_detect(const float *mag, int len)
 {
-    int   best_bin   = -1; 		// 最佳峰值位置
-    float best_ratio = 0.0f;	// 最佳信噪比
-	// 遍历所有待检测单元
-    for (int i=CFAR_GUARD+CFAR_REF; i<len-CFAR_GUARD-CFAR_REF; i++) {
-        float noise = 0.0f; // 计算参考单元噪声功率
-		// 前参考窗：从远到近，跳过保护单元
-        for (int k =i-CFAR_GUARD-CFAR_REF; k<i-CFAR_GUARD; k++)
+    int   best_bin   = -1;      // 最佳目标bin
+    float best_ratio = 0.0f;    // 最佳目标的功率信噪比
+
+    /* refine_peak()需要访问bin-1和bin+1。因此这里最多检测到len-2，避免后续峰值插值越界 */
+    int max_bin = len - 2;
+
+    /* 从CFAR_MIN_BIN开始检测，跳过DC附近的直流残留、泄漏和慢变杂波。
+     * 与传统CFAR不同，这里不要求 i >= CFAR_GUARD + CFAR_REF，
+     * 因此近距离目标不会被左侧参考窗边界直接屏蔽。*/
+    for (int i = CFAR_MIN_BIN; i <= max_bin; i++) {
+        float noise = 0.0f;
+        int ref_count = 0;
+
+        /* 左参考窗: [i - CFAR_GUARD - CFAR_REF, i - CFAR_GUARD - 1]
+         * 右参考窗: [i + CFAR_GUARD + 1,   i + CFAR_GUARD + CFAR_REF]*/
+        int left_start  = i - CFAR_GUARD - CFAR_REF;
+        int left_end    = i - CFAR_GUARD - 1;
+        int right_start = i + CFAR_GUARD + 1;
+        int right_end   = i + CFAR_GUARD + CFAR_REF;
+
+        /* 边缘bin没有完整参考窗时，只裁剪到数组有效范围内 */
+        if (left_start < 0) left_start = 0;
+        if (left_end >= len) left_end = len - 1;
+        if (right_start < 0) right_start = 0;
+        if (right_end >= len) right_end = len - 1;
+
+        /* 累加左侧可用参考单元的功率 */
+        for (int k = left_start; k <= left_end; k++) {
             noise += mag[k] * mag[k];
-		// 后参考窗：从近到远，跳过保护单元
-        for (int k = i + CFAR_GUARD + 1; k <= i + CFAR_GUARD + CFAR_REF; k++)
+            ref_count++;
+        }
+
+        /* 累加右侧可用参考单元的功率。 */
+        for (int k = right_start; k <= right_end; k++) {
             noise += mag[k] * mag[k];
-        float noise_avg = noise/(2.0f*CFAR_REF);  // 平均噪声功率
-        float sig = mag[i] * mag[i];  // 当前待检单元信号功率
-        if (sig > CFAR_THRESHOLD * noise_avg) { 
-            float snr_ratio = sig / (noise_avg + CFAR_EPSILON); // 计算信噪比(带除零保护)
+            ref_count++;
+        }
+
+        /* 边缘处如果可用参考单元太少，噪声估计会非常不稳定。此时跳过该CUT，不做检测。*/
+        if (ref_count < CFAR_MIN_REF_TOTAL) {
+            continue;
+        }
+
+        float noise_avg = noise / (float)ref_count; // 局部平均噪声功率
+        float sig = mag[i] * mag[i];                // CUT信号功率
+
+        /* CA-CFAR判决:目标功率>门限系数*局部噪声平均功率 */
+        if (sig > CFAR_THRESHOLD * noise_avg) {
+            float snr_ratio = sig / (noise_avg + CFAR_EPSILON);
+
+            /* 如果多个bin过门限，选择功率信噪比最高的bin */
             if (snr_ratio > best_ratio) {
                 best_ratio = snr_ratio;
                 best_bin = i;
             }
         }
     }
-    return best_bin; 
+
+    return best_bin;
 }
 
 /* 离散采样本质是对连续信号进行时域截断，相当于信号乘上了一个矩形窗，造成频谱旁瓣高(-13dB)，容易掩盖弱目标
@@ -264,7 +304,7 @@ static float calc_WaterVelocity(const float *phase_up_seq, int N)
         while (dp < -PI) dp += 2.0f * PI;
  
         float v = (float)RADAR_WAVELENGTH*dp/(4.0f*PI*(float)RADAR_WATER_PHASE_DT_S);
-        if (fabsf(v) < 5.0f) {
+        if (fabsf(v) < 3.5f) {
             vel_sum += v;
             valid++;
         }
@@ -357,20 +397,31 @@ void Radar_MeasureFrame(RadarFrame_t *frame)
      *    实际上水速计算只用上扫相位，下扫数据在这里丢弃
      * ==================================================== */
     float phase_up[N_CHIRPS_WATER_V];
+    int phase_valid = 0;
+
     for (int i = 0; i < N_CHIRPS_WATER_V; i++) {
         float re, im, rng;
+
         /* 上扫：提取水面距离峰的复数 → 计算相位 */
         Chirp_Start(CHIRP_UP);
         Chirp_WaitDone();
-        if(!ExtractPeakComplex(g_chirp.iq_buf, CHIRP_UP, &re, &im, &rng)) phase_up[i]=0.0f;
-		else phase_up[i] = atan2f(im, re);   /* 相位范围 [-π, π] */
-        
+
+        if(ExtractPeakComplex(g_chirp.iq_buf, CHIRP_UP, &re, &im, &rng)) {
+            phase_up[phase_valid] = atn2f(im, re);   /* 相位范围 [-π, π] */
+            phase_valid++;
+        } 
+
         /* 下扫：维持三角波结构，数据暂不使用 */
         Chirp_Start(CHIRP_DOWN);
         Chirp_WaitDone();
     }
-    frame->water_velocity_mps   = calc_WaterVelocity(phase_up, N_CHIRPS_WATER_V);
-    frame->water_velocity_valid = true;
+    if (phase_valid >= 2) {
+        frame->water_velocity_mps = calc_WaterVelocity(phase_up, phase_valid);
+        frame->water_velocity_valid = true;
+    } else {
+        frame->water_velocity_mps = 0.0f;
+        frame->water_velocity_valid = false;
+    }
 
     /* ====================================================
      *  阶段3：车速/车距（N_CHIRPS_CAR对三角波，联立方程法）

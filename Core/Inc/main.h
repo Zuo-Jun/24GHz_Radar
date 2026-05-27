@@ -61,6 +61,10 @@ void Error_Handler(void);
 #define ADXL345_SCL_GPIO_Port GPIOC
 #define ADXL345_SDA_Pin GPIO_PIN_1
 #define ADXL345_SDA_GPIO_Port GPIOC
+#define PGA_I_Pin GPIO_PIN_0
+#define PGA_I_GPIO_Port GPIOA
+#define PGA_Q_Pin GPIO_PIN_3
+#define PGA_Q_GPIO_Port GPIOA
 #define SP3485E_EN_Pin GPIO_PIN_4
 #define SP3485E_EN_GPIO_Port GPIOC
 

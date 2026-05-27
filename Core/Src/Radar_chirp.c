@@ -1,9 +1,9 @@
 #include "Radar_chirp.h"
+#include "stm32f4xx_hal_tim.h"
 
 /* ============================================================
- * ADC1为主ADC，采I路；ADC2为从ADC，采Q路
- * ADC配置-ADCs_Common_Settings
- * Mode：开启Dual Regular Simultaneous Mode
+ * ADC1为主ADC,采I路;ADC2为从ADC,采Q路
+ * Mode:开启Dual Regular Simultaneous Mode
  *  	让ADC1和ADC2在完全相同的时刻同时启动转换，保证I路和Q路采样之间没有时间差。
  * 		时间差哪怕只有几百纳秒，90°的相位关系会被破坏，FFT分离正负频率的能力变差。
  * 		不能用两次独立的HAL_ADC_Start()来采两路，因为两次调用之间会有us级的延迟。
@@ -17,41 +17,48 @@
  *		这个参数控制ADC1和ADC2采样相位的对齐精度，设最小值即可。
  *
  * ADC配置-ADC_Settings
- * Clock Prescaler：选择PCLK2 divided by 4，得到21MHz，不超过36MHz上限
+ * Clock Prescaler:选择PCLK2 divided by 4,得到21MHz,不超过36MHz上限
  *
- * Resolution：选择12 bits(15 ADC cycles)，保持最高精度，不降低
+ * Resolution:选择12 bits(15 ADC cycles),保持最高精度,不降低
  *
- * Data Alignment：选择Right alignment。12位结果放低12位，高4为为0，范围为0到4095。
+ * Data Alignment:选择Right alignment。12位结果放低12位,高4为为0,范围为0到4095
  *
- * 开启ADC1的DMA传输，Direction为Peripheral To Memory，Data Width选择Word(32位)
- * 		ADC2不需要开启DMA，二者共用一个DMA，避免ISR里两次读寄存器的时间开销。
- *
- * 使能ADC1的DMA Continuous Requests：Dual模式下DMA需要持续搬运打包后的32位结果，
- * 		每次触发产生一次DMA请求
- * 
- * ADC配置-ADC_Regular_ConversionMode
- * Number Of Conversion选择1。只有一个信号，不需要多通道扫描。
- *
- * ADC1的External Trigger Conversion Source选择Regular Conversion launched by software
- * 		ISR里调用HAL_ADCEx_MultiModeStart_DMA()同时启动ADC1和ADC2。
+ * 开启ADC1的DMA传输:Normal Mode,Direction为Peripheral To Memory，使能Memory Increment,
+ * Data Width选择Word(32位);ADC2不需要开启DMA,二者共用一个DMA,避免ISR里两次读寄存器的时间开销;
+ * 使能ADC1的DMA Continuous Requests:Dual模式下DMA需要持续搬运打包后的32位结果,每次触发产生一次DMA请求
+ * ADC Continuous Conversion Mode：Enable,否则DMA长度为4时可能只完成1次转换
  * 
  * Sampling Time选84 Cycle。ADC的一次完整转换分为两个阶段：
- * 		1、CubeMX中设置的为采样时间，这段时间ADC内部的采样保持电容对输入信号充电，时间
- *		越长充电越完整，对高阻抗信号源越友好。
- *		2、12 bit分辨率固定需要15个ADC时钟周期，这是逐次逼近型ADC的硬件决定的，不可改变。
- *		两段时间相加就是总周期数，转换时间=总周期数/ADC时钟频率，ADC采样率就是转换时间的倒数
+ * 		1、CubeMX中设置的为采样时间,这段时间ADC内部的采样保持电容对输入信号充电,时间
+ *		越长充电越完整,对高阻抗信号源越友好
+ *		2、12 bit分辨率固定需要15个ADC时钟周期,这是逐次逼近型ADC的硬件决定的,不可改变.
+ *		两段时间相加就是总周期数,转换时间=总周期数/ADC时钟频率,ADC采样率就是转换时间的倒数
+ *
+ * 注意:
+ *   CHIRP_STEP_US、ADC_FS_HZ、RADAR_TC_S等配置必须按真实TIM2周期同步修改。
  * ============================================================ */
  
  /* ============================================================
  * TIM2配置
  * Clock Source选择Internal Clock
- * TIM2挂载APB1，Timer clock为84MHz，令Prescaler=83，让计时器时钟降到1MHz
- * Counter Period=12，周期=(12+1)×1us=13us，对应CHIRP_STEP_US。
+ * TIM2挂载APB1,Timer clock为84MHz,令Prescaler=83,计数频率=1MHz;
+ * Counter Period建议先设为39,对应40μs步进周期,对应CHIRP_STEP_US,后期根据实测优化
+ * TIM2 Channel 1配置为Output Compare No Output
+ * TIM2 CH1 Pulse:建议先设为15,对应频率写入后约15 us启动ADC,后期根据实测优化
+ *
+ * 设计目标：
+ *   1. TIM2 Update中断:负责保存上一频点数据，并写入下一频点ADF4153A频率;
+ *   2. TIM2 CH1 Compare中断:在频率写入后延迟一段时间,再启动ADC DMA
+ *   3. ADC DMA一次采集CHIRP_ADC_AVG_COUNT组I/Q,完成后取平均,作为该频率点数据
+ *   4. 避免“刚写完频率就立即采样”的问题
  * ============================================================ */
  
 extern TIM_HandleTypeDef htim2;
 extern ADC_HandleTypeDef hadc1; /* 主ADC，采I路*/
 extern ADC_HandleTypeDef hadc2; /* 从ADC，采Q路*/
+
+#define CHIRP_ADC_AVG_COUNT      4U     /* 每个频点采4组I/Q，取平均 */
+#define CHIRP_ADC_START_DELAY_US 15U    /* 写完频率后等待15us再启动ADC，避免“刚写完频率就立即采样”的问题 */
 
 ChirpState_t g_chirp = {
     .dir   = CHIRP_UP,
@@ -66,13 +73,18 @@ static uint32_t s_FRAC_up[CHIRP_STEPS];
 static uint32_t s_INT_dn [CHIRP_STEPS];
 static uint32_t s_FRAC_dn[CHIRP_STEPS];
  
-/* 每次ADC转换后DMA自动填入，DMA把ADC->CDR搬到s_iq_raw
+/* DMA一次采集多组ADC->CDR打包数据：
  * CDR格式：[31:16]=ADC2结果(Q)，[15:0]=ADC1结果(I) */
-static volatile uint32_t s_iq_raw = 0; 
+static volatile uint32_t s_iq_raw[CHIRP_ADC_AVG_COUNT];
  
-/* -------- DMA是否完成标志（ISR和回调之间同步） -------- */
-static volatile bool s_dma_done = false;
- 
+/* -------- ADC采样同步标志 -------- */
+static volatile bool s_dma_done = false;     /* ADC DMA已完成，并完成平均 */
+static volatile bool s_adc_start_en = false; /* 允许TIM2 CH1触发ADC */
+/* ADC平均后的临时结果，由TIM2 Update中断写入g_chirp.iq_buf */
+static volatile int16_t s_i_avg = 0;
+static volatile int16_t s_q_avg = 0;
+/* 调试用：统计采样未完成次数，若该值增加，说明TIM2周期太短或ADC/DMA未按预期完成 */
+static volatile uint32_t s_sample_miss_count = 0U;
 
 // 将VCO目标频率 → ADF N分频参数
 static void FreqToND(double vco_hz, uint32_t *INT_out, uint32_t *FRAC_out)
@@ -96,38 +108,52 @@ void Chirp_Precompute(void)
     }
 }
  
+/* 写入指定step的ADF频率 */
+static void Chirp_SetStepFrequency(uint8_t step)
+{
+    if (g_chirp.dir == CHIRP_UP) {
+        ADF4153A_SetFrequency(s_INT_up[step], s_FRAC_up[step], RADAR_MOD);
+    } else {
+        ADF4153A_SetFrequency(s_INT_dn[step], s_FRAC_dn[step], RADAR_MOD);
+    }
+}
 
-// 设起始频率 → 等PLL锁定 → 启动DMA → 启动TIM2
+// 设起始频率 → 等PLL锁定 → 启动TIM2 Update/Compare
 void Chirp_Start(ChirpDir_t dir)
 {
     g_chirp.dir  = dir;
     g_chirp.step = 0;
     g_chirp.done = false;
-    s_dma_done   = false;
- 
-    /* 根据chirp方向设置初始频率 */
-    if (dir == CHIRP_UP) {
-        ADF4153A_SetFrequency(s_INT_up[0], s_FRAC_up[0], RADAR_MOD);
-    } else {
-        ADF4153A_SetFrequency(s_INT_dn[0], s_FRAC_dn[0], RADAR_MOD);
-    }
- 
-    /* 等PLL锁定到起始频率（从上一chirp末尾跳到起始，最坏频差250MHz）
-     * 环路带宽20kHz，锁定约需0.5ms，用1ms保守等待 */
+
+    s_dma_done     = false;
+    s_adc_start_en = true; /* 允许TIM2 CH1触发ADC */
+
+    s_i_avg = 0;
+    s_q_avg = 0;
+    s_sample_miss_count = 0U;
+
+    /* 先停止可能残留的定时器和DMA */
+    HAL_TIM_OC_Stop_IT(&htim2,TIM_CHANNEL_1);
+    HAL_TIM_Base_Stop_IT(&htim2);
+    HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+
+    /* 设置起始频率 */
+    Chirp_SetStepFrequency(g_chirp.step);
+    /* 起始频率跳变较大，保守等待PLL锁定 */
     HAL_Delay(1);
- 
-    /* 启动ADC双通道DMA（每次ISR触发一次转换，DMA自动搬运1个word）
-     * HAL_ADCEx_MultiModeStart_DMA：
-     *   - 启动ADC1为主机，ADC2为从机，同步触发模式
-     *   - DMA把ADC->CDR搬到s_iq_raw（1个uint32_t）
-     *   - 每次转换完成DMA产生TC中断 → 调用回调 */
-    HAL_ADCEx_MultiModeStart_DMA(&hadc1,(uint32_t *)&s_iq_raw,1);  /* 每次搬1个word */
- 
-    /* 启动TIM2中断定时器 */
+
+    /* 设置比较点:计数器到达CHIRP_ADC_START_DELAY_US时启动ADC采样 */
+    __HAL_TIM_SET_COUNTER(&htim2, 0U);
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, CHIRP_ADC_START_DELAY_US);
+    /* 清除定时器标志 */
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_UPDATE);
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1);
+    /* 启动定时器，等待中断触发 */
     HAL_TIM_Base_Start_IT(&htim2);
+    HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_1);
 }
  
-// 告知应用层chirp完成，不用标志位就只能死等固定时间或轮询step
+// 等待本次chirp完成，不用标志位就只能死等固定时间或轮询step
 void Chirp_WaitDone(void)
 {
     while (!g_chirp.done) {
@@ -135,67 +161,97 @@ void Chirp_WaitDone(void)
     }
 }
  
-// ADC->CDR 32位数据已就绪，从ADC外设通过DMA传输到Memory
+/* ADC DMA完成回调:对CHIRP_ADC_AVG_COUNT组I/Q求平均 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1) {
+        int32_t sum_i = 0;
+        int32_t sum_q = 0;
+
+        for (uint32_t n = 0; n < CHIRP_ADC_AVG_COUNT; n++) {
+            uint32_t raw = s_iq_raw[n];
+            // CDR[15:0]  = ADC1结果 = I路(0~4095)
+            // CDR[31:16] = ADC2结果 = Q路(0~4095)
+            int32_t i_raw = (int32_t)( raw        & 0xFFFFU);
+            int32_t q_raw = (int32_t)((raw >> 16) & 0xFFFFU);
+
+            sum_i += i_raw;
+            sum_q += q_raw;
+        }
+
+        /* 平均后减2048去直流偏置,转换为有符号值(-2048~+2047) */
+        s_i_avg = (int16_t)((sum_i / (int32_t)CHIRP_ADC_AVG_COUNT) - 2048);
+        s_q_avg = (int16_t)((sum_q / (int32_t)CHIRP_ADC_AVG_COUNT) - 2048);
+
         s_dma_done = true;
+
+        /* 连续转换模式下，DMA完成后停止ADC，避免继续转换 */
+        HAL_ADCEx_MultiModeStop_DMA(&hadc1);
     }
 }
 
-void Chirp_StepISR(void)
+/* TIM2 CH1 Compare中断:频率写入并延迟后,启动ADC DMA */
+static void Chirp_CompareISR(void)
 {
-    uint8_t step = g_chirp.step;
- 
-    /* 1. 读取并存储本步的IQ数据
-     *    CDR[15:0]  = ADC1结果 = I路（0~4095）
-     *    CDR[31:16] = ADC2结果 = Q路（0~4095）
-     *    减2048去直流偏置，转换为有符号值（-2048~+2047） */
-    if (s_dma_done) {
-        uint32_t raw = s_iq_raw;
-		/*
-		* 目前这里采用的是硬编码去掉直流偏置，可换为动态减均值。
-		* 对每帧数据先算再均值再整体相减，自适应地消除硬件误差，但需额外累加运算
-		*/
-        g_chirp.iq_buf[step].i = (int16_t)( raw        & 0xFFFFU) - 2048;
-        g_chirp.iq_buf[step].q = (int16_t)((raw >> 16) & 0xFFFFU) - 2048;
+    if (!g_chirp.done && s_adc_start_en) {
         s_dma_done = false;
-    }
- 
-    /* 2. 判断是否还有下一步 */
-	if(step<CHIRP_STEPS-1){
-		// 还有下一步，写写一步的ADF频率，重启DMA
-		uint8_t next = step + 1;
-		
-		if (g_chirp.dir == CHIRP_UP) {
-        ADF4153A_SetFrequency(s_INT_up[next], s_FRAC_up[next], RADAR_MOD);
-		} else {
-			ADF4153A_SetFrequency(s_INT_dn[next], s_FRAC_dn[next], RADAR_MOD);
-		}
- 
-	/* 3. 停止旧DMA → 重启新DMA。HAL的MultiMode DMA是单次模式（length=1）
-	 * 转换完成后DMA自动停止，不会自动重新触发。*/
-		HAL_ADCEx_MultiModeStop_DMA(&hadc1);
-		s_dma_done = false; // 避免因时延问题导致的误判，确保每次ADC启动时标志为假
-		HAL_ADCEx_MultiModeStart_DMA(&hadc1,(uint32_t *)&s_iq_raw,1);
-		
-		g_chirp.step = next;
-	}
-    else{
-		// step=CHIRP_STEPS-1，结束本次chirp
-        HAL_ADCEx_MultiModeStop_DMA(&hadc1);
-        HAL_TIM_Base_Stop_IT(&htim2);
-        g_chirp.done = true;
-		/* 此后Chirp_WaitDone()里的while循环会退出
-         * 调用方负责决定下一步做什么（启动下扫chirp、或切换到下一个测量阶段） */
+
+        /* 避免上一次DMA残留，然后重新启动ADC DMA */
+        (void)HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+        HAL_ADCEx_MultiModeStart_DMA(&hadc1, (uint32_t *)s_iq_raw, CHIRP_ADC_AVG_COUNT);
     }
 }
+
+/* TIM2 Update中断：保存上一点数据，写入下一步频率 */
+void Chirp_UpdateISR(void)
+{
+    /* 1. 保存当前step的ADC平均数据 */
+    if (s_dma_done) {
+        g_chirp.iq_buf[g_chirp.step].i = s_i_avg;
+        g_chirp.iq_buf[g_chirp.step].q = s_q_avg;
+        s_dma_done = false;
+    } else {
+        /* 如果进入下一步时上一点ADC还没完成，说明时序设计不够。
+         * 这里先保留为0并计数，后续可改为置错误标志。 */
+        g_chirp.iq_buf[g_chirp.step].i = 0;
+        g_chirp.iq_buf[g_chirp.step].q = 0;
+        s_sample_miss_count++;
+    }
  
-// 定时器中断处理函数
+    /* 2. 判断是否完成 */
+    if (g_chirp.step >= (CHIRP_STEPS - 1U)) {
+        s_adc_start_en = false;
+
+        HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_1);
+        HAL_TIM_Base_Stop_IT(&htim2);
+        HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+
+        g_chirp.done = true;
+        return;
+    }
+
+    /* 3. 写入下一步频率 */
+    g_chirp.step++;
+    s_dma_done = false;
+    s_adc_start_en = true;
+
+    Chirp_SetStepFrequency(g_chirp.step);
+
+    /* 4. 下一次TIM2 CH1 Compare到来后启动ADC */
+}
+ 
+/* TIM2 Update回调 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM2) {
-        Chirp_StepISR();
+        Chirp_UpdateISR();
     }
 }
 
+/* TIM2 Output Compare回调 */
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if ((htim->Instance == TIM2) && (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)) {
+        Chirp_CompareISR();
+    }
+}
