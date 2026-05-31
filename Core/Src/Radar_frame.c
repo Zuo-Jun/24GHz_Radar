@@ -186,8 +186,8 @@ static void run_range_fft(const IQ_Sample_t *iq_buf,ChirpDir_t dir,
  *    y0=mag[bin-1], y1=mag[bin], y2=mag[bin+1]
  *    抛物线顶点偏移 = 0.5×(y0-y2)/(y0-2y1+y2)
  *
- *  效果：距离误差从最大0.5bin×0.234m/bin≈0.12m
- *        降到约0.05bin×0.234m/bin≈0.012m
+ *  效果：距离误差从最大0.5bin×0.37m/bin≈0.185m
+ *        降到约0.05bin×0.37m/bin≈0.0185m
  * ============================================================ */
 static float refine_peak(const float *mag, int bin, int len)
 {
@@ -201,9 +201,9 @@ static float refine_peak(const float *mag, int bin, int len)
  *
  *  距离 d = f_beat × c × Tc / (2B)=f_beat × c / (2S)
  *
- *  目前设置参数：ADC_FS=200kHz，FFT_SIZE=128，S=250GHz/s
- *    每bin对应频率 = 200000/128 = 1562.5Hz
- *    每bin对应距离 = 1562.5 × 3e8 / (2×250e9) ≈ 0.234m
+ *  目前设置参数：ADC_FS=25kHz，FFT_SIZE=128，S=79.1GHz/s
+ *    每bin对应频率 = 25000/128 = 195.3125Hz
+ *    每bin对应距离 = 195.3125 × 3e8 / (2×79.1e9) ≈ 0.37m
  * ============================================================ */
 static float bin_to_range(float bin)
 {
@@ -282,14 +282,14 @@ static bool ExtractPeakComplex(const IQ_Sample_t *iq_buf,ChirpDir_t dir,
  *  原理：
  *    相邻chirp之间目标移动δd
  *    相位变化 Δφ = 4π×δd/λ
- *    速度 v = λ×Δφ/(4π×Tc)
+ *    速度 v = λ×Δφ/(4π×Tφ)
  *
  *  相位展开（while循环）：
  *    消除2π跳变，确保Δφ在[-π,π]范围内
- *    最大不模糊速度 = λ/(4Tc) ≈ 3.11m/s（满足水速<3m/s的要求）
+ *    最大不模糊速度 = λ/(4Tφ) ≈ 0.373m/s
  *
- *  粗过滤（|v|<5m/s）：
- *    去除因相位噪声引起的极端异常值，5m/s略大于最大期望值3.11m/s
+ *  粗过滤（|v|<0.4m/s）：
+ *    去除因相位噪声引起的极端异常值，0.4m/s略大于最大期望值0.37m/s
  * ============================================================ */
 static float calc_WaterVelocity(const float *phase_up_seq, int N)
 {
@@ -304,7 +304,7 @@ static float calc_WaterVelocity(const float *phase_up_seq, int N)
         while (dp < -PI) dp += 2.0f * PI;
  
         float v = (float)RADAR_WAVELENGTH*dp/(4.0f*PI*(float)RADAR_WATER_PHASE_DT_S);
-        if (fabsf(v) < 3.5f) {
+        if (fabsf(v) < 0.4f) {
             vel_sum += v;
             valid++;
         }
