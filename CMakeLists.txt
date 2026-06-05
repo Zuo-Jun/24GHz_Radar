@@ -47,6 +47,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/SP3485E.c
     Core/Src/Radar_protocol.c
     Core/Src/ADXL345.c
+    Core/Src/ADF4153A.c
+    Core/Src/BGT24MTR11.c
+    Core/Src/PGA113.c
+    Core/Src/Radar_chirp.c
+    Core/Src/Radar_frame.c
 )
 
 # Add include paths

@@ -67,6 +67,16 @@ void Error_Handler(void);
 #define PGA_Q_GPIO_Port GPIOA
 #define SP3485E_EN_Pin GPIO_PIN_4
 #define SP3485E_EN_GPIO_Port GPIOC
+#define ADF_MUXOUT_Pin GPIO_PIN_0
+#define ADF_MUXOUT_GPIO_Port GPIOB
+#define ADF_LE_Pin GPIO_PIN_13
+#define ADF_LE_GPIO_Port GPIOB
+#define Power_EN_Pin GPIO_PIN_14
+#define Power_EN_GPIO_Port GPIOB
+#define SPI_DATA_Pin GPIO_PIN_8
+#define SPI_DATA_GPIO_Port GPIOB
+#define SPI_SCL_Pin GPIO_PIN_9
+#define SPI_SCL_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
