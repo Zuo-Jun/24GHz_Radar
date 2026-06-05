@@ -43,8 +43,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PERIPH_POWER_ON()   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET)
-#define PERIPH_POWER_OFF()  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET)
+#define PERIPH_POWER_ON()   HAL_GPIO_WritePin(Power_EN_GPIO_Port, Power_EN_Pin, GPIO_PIN_SET)
+#define PERIPH_POWER_OFF()  HAL_GPIO_WritePin(Power_EN_GPIO_Port, Power_EN_Pin, GPIO_PIN_RESET)
 #define RAD_TO_DEG              (57.2957795f)
 /* USER CODE END PD */
 
@@ -110,6 +110,7 @@ int main(void)
   //  RS485_SendStr("$RADAR,BOOT:OK\r\n");
 
   RadarProtocol_Init(1U); /* 设备ID=1，单设备时固定为1 */
+  PERIPH_POWER_ON();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -123,22 +124,22 @@ int main(void)
      *    INT=60, FRAC=0
      *  prescaler=0（4/5模式）：1500MHz < 2GHz，INT=60 ≥ 31 ✓
      * ====================================================== */
-    // ADF4153A_Config_t pll_cfg = {
-    //     .fastlock_en    = 0,
-    //     .INT            = 60,
-    //     .FRAC           = 0,
-    //     .resync_en      = 0,
-    //     .muxout         = MUXOUT_DLOCK_DIGITAL,
-    //     .prescaler      = RADAR_PRESCALER,   /* 0=4/5，来自radar_config.h */
-    //     .R              = RADAR_R,           /* 1 */
-    //     .MOD            = RADAR_MOD,         /* 125 */
-    //     .resync         = 0,
-    //     .refin_doubler  = RADAR_REFIN_DBL,   /* 0 */
-    //     .cp_current     = 7,
-    //     .pd_polarity    = 1,
-    //     .ldp            = 0,
-    //     .noise_spur     = NOISE_SPUR_LOWEST_NOISE,
-    // };
+    ADF4153A_Config_t pll_cfg = {
+        .fastlock_en    = 0,
+        .INT            = 60,
+        .FRAC           = 0,
+        .resync_en      = 0,
+        .muxout         = MUXOUT_DLOCK_DIGITAL,
+        .prescaler      = RADAR_PRESCALER,   /* 0=4/5，来自radar_config.h */
+        .R              = RADAR_R,           /* 1 */
+        .MOD            = RADAR_MOD,         /* 125 */
+        .resync         = 0,
+        .refin_doubler  = RADAR_REFIN_DBL,   /* 0 */
+        .cp_current     = 7,
+        .pd_polarity    = 1,
+        .ldp            = 0,
+        .noise_spur     = NOISE_SPUR_LOWEST_NOISE,
+    };
 
     // BGT24MTR11_Config_t bgt_cfg = {
     // .gs               = 0,              /* 正常LNA增益 */
@@ -151,15 +152,13 @@ int main(void)
     // .amux             = BGT_AMUX_VTEMP, /* ANA引脚输出温度信号 */
     // };
     
-    // ADF4153A_Init(&pll_cfg);
-
-    // if (!ADF4153A_WaitLock(500)) {
-    //     RS485_SendStr("$RADAR,ERR:PLL_LOCK_FAIL\r\n");
-    //     Error_Handler();
-    //     return -1;
-    // }
-    // RS485_SendStr("$RADAR,PLL:LOCKED\r\n");
-    // /* ANA引脚是否配置，GPIO配置为输入该如何解读数据 */
+    ADF4153A_Init(&pll_cfg);
+    if (!ADF4153A_WaitLock(500)) {
+        RS485_SendStr("$RADAR,ERR:PLL_LOCK_FAIL\r\n");
+        Error_Handler();
+        return -1;
+    }
+    RS485_SendStr("$RADAR,PLL:LOCKED\r\n");
     // BGT24MTR11_Init(&bgt_cfg);
 
     // /* 预计算chirp查找表（只做一次） */
@@ -173,23 +172,23 @@ int main(void)
      * ====================================================== */
     // RadarFrame_t frame;
 
-    ADXL345_Config_t cfg = {
-    .data_rate    = ADXL345_RATE_100,   /* 100Hz */
-    .range        = ADXL345_RANGE_2G,   /* ±2g */
-    .full_res     = true,               /* 全分辨率模式 */
-    .low_power    = false,
-    .offset_x=0, .offset_y=-2, .offset_z=4, /* 手动偏移校准 */
-    .addr_high    = false,              /* 地址0x53 */
-  };
+  //   ADXL345_Config_t cfg = {
+  //   .data_rate    = ADXL345_RATE_100,   /* 100Hz */
+  //   .range        = ADXL345_RANGE_2G,   /* ±2g */
+  //   .full_res     = true,               /* 全分辨率模式 */
+  //   .low_power    = false,
+  //   .offset_x=0, .offset_y=-2, .offset_z=4, /* 手动偏移校准 */
+  //   .addr_high    = false,              /* 地址0x53 */
+  // };
 
-  if(ADXL345_Init(&cfg)) {
-    g_adxl345_ok = 1U;
-    // RS485_SendStr("ACCEL_INIT_SUCCESS\r\n");
-    printf("ADXL345 initialized, ID=0x%02X\r\n", ADXL345_GetDeviceID());
-  } 
+  // if(ADXL345_Init(&cfg)) {
+  //   g_adxl345_ok = 1U;
+  //   // RS485_SendStr("ACCEL_INIT_SUCCESS\r\n");
+  //   printf("ADXL345 initialized, ID=0x%02X\r\n", ADXL345_GetDeviceID());
+  // } 
 
-  ADXL345_AccelData_t accel;
-  (void)accel;
+  // ADXL345_AccelData_t accel;
+  // (void)accel;
 
   while (1)
   {
@@ -209,16 +208,16 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    RadarFrame_t frame = {
-        .water_level_valid = 1,
-        .water_level_m = 1.234f,
-        .water_velocity_valid = 1,
-        .water_velocity_mps = 0.567f,
-    };
+    // RadarFrame_t frame = {
+    //     .water_level_valid = 1,
+    //     .water_level_m = 1.234f,
+    //     .water_velocity_valid = 1,
+    //     .water_velocity_mps = 0.567f,
+    // };
 
     // /* 当前先手动补硬件状态位，后续可从硬件状态寄存器读取 */
-    uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
-                            RADAR_STATUS_ADC_OK;
+    // uint16_t extra_status = RADAR_STATUS_PLL_LOCK_OK |
+    //                         RADAR_STATUS_ADC_OK;
 
     /* 只发二进制帧，不等ACK */
     // RadarProtocol_SendData(&frame, extra_status);
@@ -228,7 +227,7 @@ int main(void)
     /* 如果想用串口助手看ASCII，可临时改成： */
     // RadarProtocol_SendDebug(&frame); 
 
-    HAL_Delay(1000);
+    // HAL_Delay(1000);
   }
   /* USER CODE END 3 */
 }

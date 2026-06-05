@@ -43,21 +43,21 @@
  *    DB1:0     C2C1=11      寄存器选择                    
  * ============================================================ */
 
-#define ADF_LE_Pin GPIO_PIN_13
-#define ADF_LE_GPIO_Port GPIOB
 #define ADF_MUXOUT_Pin GPIO_PIN_0
 #define ADF_MUXOUT_GPIO_Port GPIOB
-#define SoftSPI_DATA_Pin GPIO_PIN_8
-#define SoftSPI_DATA_GPIO_Port GPIOB
-#define SoftSPI_CLK_Pin GPIO_PIN_9
-#define SoftSPI_CLK_GPIO_Port GPIOB
+#define ADF_LE_Pin GPIO_PIN_13
+#define ADF_LE_GPIO_Port GPIOB
+#define SPI_DATA_Pin GPIO_PIN_8
+#define SPI_DATA_GPIO_Port GPIOB
+#define SPI_SCL_Pin GPIO_PIN_9
+#define SPI_SCL_GPIO_Port GPIOB
 
 #define ADF_LE_LOW()    HAL_GPIO_WritePin(ADF_LE_GPIO_Port, ADF_LE_Pin, GPIO_PIN_RESET)
 #define ADF_LE_HIGH()   HAL_GPIO_WritePin(ADF_LE_GPIO_Port, ADF_LE_Pin, GPIO_PIN_SET)
-#define ADF_DATA_LOW()		HAL_GPIO_WritePin(SoftSPI_DATA_GPIO_Port, SoftSPI_DATA_Pin, GPIO_PIN_RESET)
-#define ADF_DATA_HIGH()		HAL_GPIO_WritePin(SoftSPI_DATA_GPIO_Port, SoftSPI_DATA_Pin, GPIO_PIN_SET)
-#define ADF_CLK_LOW()		HAL_GPIO_WritePin(SoftSPI_CLK_GPIO_Port, SoftSPI_CLK_Pin, GPIO_PIN_RESET)
-#define ADF_CLK_HIGH()		HAL_GPIO_WritePin(SoftSPI_CLK_GPIO_Port, SoftSPI_CLK_Pin, GPIO_PIN_SET)
+#define ADF_DATA_LOW()		HAL_GPIO_WritePin( SPI_DATA_GPIO_Port, SPI_DATA_Pin, GPIO_PIN_RESET)
+#define ADF_DATA_HIGH()		HAL_GPIO_WritePin(SPI_DATA_GPIO_Port, SPI_DATA_Pin, GPIO_PIN_SET)
+#define ADF_CLK_LOW()		HAL_GPIO_WritePin(SPI_SCL_GPIO_Port, SPI_SCL_Pin, GPIO_PIN_RESET)
+#define ADF_CLK_HIGH()		HAL_GPIO_WritePin(SPI_SCL_GPIO_Port, SPI_SCL_Pin, GPIO_PIN_SET)
 
 /* ---------- 系统频率常数（单位：Hz） ---------- */
 #define ADF_REFIN_HZ        25000000UL   /* 外部参考：25MHz晶振 */
