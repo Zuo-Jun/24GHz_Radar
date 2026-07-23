@@ -1,0 +1,30 @@
+BGT24MTR11    MCU
+    CS        PB12
+    CLK       PB9
+    SI        PB8
+    ANA       PA4
+    TXOFF     PA12
+=====================
+ADF4153A      MCU
+  MUXOUT      PB0
+    LE        PB13
+   DATA       PB8
+    CLK       PB9
+=====================
+SP3485E       MCU
+   RO         PC11
+   DI         PC10
+ DE/RE        PC4
+=====================
+WL2801E       MCU
+   EN         PB14
+=====================
+PGA113        MCU
+   CS         PB11
+  SCLK        PB9
+   DIO        PB8
+=====================
+ADXL345BCCZ   MCU
+   SCL        PC0
+   SDA        PC1 
+====================
